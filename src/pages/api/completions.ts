@@ -1,21 +1,13 @@
+/* eslint-disable no-console */
+import type { APIRoute } from 'astro';
+import type { ParsedEvent, ReconnectInterval } from 'eventsource-parser';
+import { createParser } from 'eventsource-parser';
 import { defaultModel, supportedModels } from '@configs';
 import { Message } from '@interfaces';
-import type { APIRoute } from 'astro';
+import { loadBalancer } from '@utils/server';
+import { apiKeyStrategy, apiKeys, baseURL, config, password as pwd } from '.';
 
-// read apiKey from env/process.env
-const apiKey = import.meta.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY;
-
-// read disableProxy from env
-const disableProxy = import.meta.env.DISABLE_LOCAL_PROXY === 'true';
-
-// read localProxy from env
-const localProxy = import.meta.env.LOCAL_PROXY;
-
-// use proxy in local env
-const baseURL =
-  process.env.NODE_ENV === 'development' && !disableProxy
-    ? localProxy
-    : 'api.openai.com';
+export { config };
 
 export const post: APIRoute = async ({ request }) => {
   if (!baseURL) {
@@ -25,11 +17,24 @@ export const post: APIRoute = async ({ request }) => {
   }
 
   const body = await request.json();
-  const { messages } = body;
+  const { messages, temperature = 1, password } = body;
   let { key, model } = body;
 
-  key = key || apiKey;
+  if (!key) {
+    const next = loadBalancer(apiKeys, apiKeyStrategy);
+    key = next();
+  }
+
   model = model || defaultModel;
+
+  if (pwd && password !== pwd) {
+    return new Response(
+      JSON.stringify({ msg: 'No password or wrong password' }),
+      {
+        status: 401,
+      }
+    );
+  }
 
   if (!key) {
     return new Response(JSON.stringify({ msg: 'No API key provided' }), {
@@ -47,7 +52,7 @@ export const post: APIRoute = async ({ request }) => {
   }
 
   try {
-    const completion = await fetch(`https://${baseURL}/v1/chat/completions`, {
+    const res = await fetch(`https://${baseURL}/v1/chat/completions`, {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
@@ -59,23 +64,47 @@ export const post: APIRoute = async ({ request }) => {
           role: message.role,
           content: message.content,
         })),
+        temperature,
+        stream: true,
       }),
     });
-    const data = await completion.json();
-
-    const { choices = [], error } = data;
-
-    // error from openapi
-    if (error?.message) {
-      throw new Error(error.message);
+    if (!res.ok) {
+      return new Response(res.body, {
+        status: res.status,
+      });
     }
 
-    return new Response(
-      JSON.stringify({
-        data: choices?.[0]?.message || '',
-      }),
-      { status: 200 }
-    );
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        const streamParser = (event: ParsedEvent | ReconnectInterval) => {
+          if (event.type === 'event') {
+            const { data } = event;
+            if (data === '[DONE]') {
+              controller.close();
+              return;
+            }
+            try {
+              const json = JSON.parse(data);
+              const text = json.choices[0].delta?.content || '';
+              const queue = encoder.encode(text);
+              controller.enqueue(queue);
+            } catch (e) {
+              controller.error(e);
+            }
+          }
+        };
+
+        const parser = createParser(streamParser);
+        // eslint-disable-next-line no-restricted-syntax, @typescript-eslint/no-explicit-any
+        for await (const chunk of res.body as any)
+          parser.feed(decoder.decode(chunk));
+      },
+    });
+
+    return new Response(stream);
   } catch (e) {
     console.log('Error', e);
     return new Response(JSON.stringify({ msg: e?.message || e?.stack || e }), {

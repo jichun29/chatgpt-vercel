@@ -1,6 +1,5 @@
 ---
-import Main from '@components/Main';
-import { getI18n } from '@utils/i18n';
+import Main from '@modules/Main';
 import type { Lang } from '@interfaces';
 import Layout from '@/layouts/Layout.astro';
 import 'katex/dist/katex.min.css';
@@ -8,31 +7,39 @@ import 'highlight.js/styles/atom-one-dark.css';
 
 // read lang from env/process.env
 const lang: Lang = import.meta.env.LANGUAGE || process.env.LANGUAGE || 'en';
-const i18n = getI18n(lang);
+// read inVercel from process.env
+const inVercel = !!process.env.VERCEL;
 ---
 
 <Layout title="ChatGPT">
-  <main>
-    <div id="container">
-      <Main i18n={i18n} lang={lang} client:only="react" />
-    </div>
-  </main>
+  <div id="container" class="container-default">
+    <Main lang={lang} inVercel={inVercel} client:only="react" />
+  </div>
 </Layout>
 
-<style>
-  main {
-    margin: auto;
-    padding: var(--content-padding-top) 2rem var(--footer-height) 2rem;
-    max-width: var(--content-width);
-    width: 100%;
+<style is:global>
+  .container-default {
+    max-width: 1200px;
+    width: 80vw;
+    height: 80vh;
+  }
+
+  .container-loose {
+    max-width: 1800px;
+    width: 90vw;
+    height: 90vh;
+  }
+
+  .container-full {
+    width: 100vw;
     height: 100vh;
   }
-  #container {
-    margin-top: var(--header-height);
-    height: calc(100vh - var(--content-padding-top) - var(--header-height));
-    overflow-y: scroll;
-  }
-  #container::-webkit-scrollbar {
-    display: none;
+
+  /* mobile style */
+  @media screen and (max-width: 768px) {
+    #container {
+      width: 100vw;
+      height: 100%;
+    }
   }
 </style>
